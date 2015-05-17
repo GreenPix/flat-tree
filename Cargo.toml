@@ -1,0 +1,4 @@
+[package]
+name = "flat_tree"
+version = "0.0.1"
+authors = ["Vaelden <maugan.villatel@gmail.com>"]
