@@ -13,21 +13,41 @@ use super::FlatTreeIterMut;
 #[derive(Debug)]
 pub struct FlatTree<T> {
     buffer: Box<[TreeNode<T>]>,
-    lookup_indices: Option<Box<[usize]>>,
 }
 
 impl<T> Deref for FlatTree<T> {
     type Target = [TreeNode<T>];
 
-    fn deref<'a>(&'a self) -> &'a [TreeNode<T>] {
-        self.buffer.deref()
+    fn deref<'a>(&'a self) -> &'a <Self as Deref>::Target {
+        &self.buffer
     }
 }
 
 impl<T> DerefMut for FlatTree<T> {
 
-    fn deref_mut<'a>(&'a mut self) -> &'a mut [TreeNode<T>] {
-        self.buffer.deref_mut()
+    fn deref_mut<'a>(&'a mut self) -> &'a mut <Self as Deref>::Target {
+        &mut self.buffer
+    }
+}
+
+#[derive(Debug)]
+pub struct FlatTreeLookup<T> {
+    tree: FlatTree<T>,
+    lookup_indices: Box<[usize]>,
+}
+
+impl<T> Deref for FlatTreeLookup<T> {
+    type Target = FlatTree<T>;
+
+    fn deref<'a>(&'a self) -> &'a <Self as Deref>::Target {
+        &self.tree
+    }
+}
+
+impl<T> DerefMut for FlatTreeLookup<T> {
+
+    fn deref_mut<'a>(&'a mut self) -> &'a mut <Self as Deref>::Target {
+        &mut self.tree
     }
 }
 
@@ -50,32 +70,6 @@ impl<T> FlatTree<T> {
 
         FlatTree {
             buffer: buffer.into_boxed_slice(),
-            lookup_indices: None,
-        }
-    }
-
-    pub fn new_with_lookup_table<F, N>(
-        root: &N,
-        cap: usize,
-        node_producer: F) -> FlatTree<T>
-        where N: HasChildren,
-              F: Fn(&N) -> Option<T>
-    {
-        let mut buffer = Vec::with_capacity(cap);
-        let mut lookup_table = Some(Vec::with_capacity(cap));
-
-        FlatTree::fill_buffer(
-            &mut buffer,
-            &mut lookup_table,
-            &mut 0,
-            root,
-            &node_producer,
-            true
-        );
-
-        FlatTree {
-            buffer: buffer.into_boxed_slice(),
-            lookup_indices: Some(lookup_table.unwrap().into_boxed_slice())
         }
     }
 
@@ -101,16 +95,6 @@ impl<T> FlatTree<T> {
         assert!(index >= 0);
         // Return diff
         index
-    }
-
-    pub fn enumerate_lookup_indices_mut<'a>(&'a mut self)
-        -> Option<Zip<Iter<usize>, IterMut<'a, TreeNode<T>>>>
-    {
-        if let Some(ref tb) = self.lookup_indices {
-            Some(tb.iter().zip(self.buffer.iter_mut()))
-        } else {
-            None
-        }
     }
 
     pub fn enumerate_mut<'a>(& 'a mut self)
@@ -194,6 +178,43 @@ impl<T> FlatTree<T> {
         }
     }
 
+}
+
+impl <T> FlatTreeLookup<T> {
+    pub fn new<F, N>(
+        root: &N,
+        cap: usize,
+        node_producer: F) -> FlatTree<T>
+        where N: HasChildren,
+              F: Fn(&N) -> Option<T>
+    {
+        let mut buffer = Vec::with_capacity(cap);
+        let mut lookup_table = Some(Vec::with_capacity(cap));
+
+        FlatTree::fill_buffer(
+            &mut buffer,
+            &mut lookup_table,
+            &mut 0,
+            root,
+            &node_producer,
+            true
+        );
+
+        FlatTree {
+            buffer: buffer.into_boxed_slice(),
+            lookup_indices: Some(lookup_table.unwrap().into_boxed_slice())
+        }
+    }
+
+    pub fn enumerate_lookup_indices_mut<'a>(&'a mut self)
+        -> Option<Zip<Iter<usize>, IterMut<'a, TreeNode<T>>>>
+    {
+        if let Some(ref tb) = self.lookup_indices {
+            Some(tb.iter().zip(self.buffer.iter_mut()))
+        } else {
+            None
+        }
+    }
 }
 
 
