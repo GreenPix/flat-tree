@@ -1,4 +1,5 @@
 // Quick benches, we should have more of them
+// Only works with nightly (benchmarks are still unstable)
 #![feature(test)]
 extern crate test;
 extern crate flat_tree;

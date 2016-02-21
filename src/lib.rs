@@ -1,10 +1,8 @@
-#![feature(nonzero)]
-extern crate core;
-use core::nonzero::NonZero;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::mem;
 use std::marker::PhantomData;
+use std::ptr;
 
 pub mod buffer;
 
@@ -56,24 +54,22 @@ impl<T> TreeNode<T> {
 
 /// Const iterator over FlatTree
 pub struct FlatTreeIter<'a, T: 'a> {
-    current: Option<NonZero<*const TreeNode<T>>>,
+    current: *const TreeNode<T>,
     _marker: PhantomData<&'a TreeNode<T>>,
 }
 
 impl<'a, T> FlatTreeIter<'a, T> {
     pub fn new(flat: &'a [TreeNode<T>]) -> FlatTreeIter<'a, T> {
-        unsafe {
-            FlatTreeIter {
-                current: flat.first().map(|pointer| NonZero::new(pointer as *const TreeNode<T>)),
-                _marker: PhantomData,
-            }
+        FlatTreeIter {
+            current: flat.first().map(|p| p as *const TreeNode<T>).unwrap_or(ptr::null()),
+            _marker: PhantomData,
         }
     }
 
     pub fn new_empty() -> FlatTreeIter<'a, T> {
         FlatTreeIter {
-            current: None,
-            _marker: PhantomData
+            current: ptr::null(),
+            _marker: PhantomData,
         }
     }
 }
@@ -82,38 +78,40 @@ impl<'a, T: 'a> Iterator for FlatTreeIter<'a, T> {
     type Item = (&'a TreeNode<T>, Children<'a, T>);
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        self.current.take().map(|ptr|{
+        if self.current.is_null() {
+            None
+        } else {
             unsafe {
-                let node: &TreeNode<T> = mem::transmute(ptr);
+                let node: &TreeNode<T> = mem::transmute(self.current);
                 if node.next_sibling > 0 {
-                    self.current = Some(NonZero::new(ptr.offset(node.next_sibling)));
+                    self.current = self.current.offset(node.next_sibling);
+                } else {
+                    self.current = ptr::null();
                 }
                 let children = Children::new(node);
-                (mem::transmute(node), children)
+                Some((mem::transmute(node), children))
             }
-        })
+        }
     }
 }
 
 /// Mutable iterator over FlatTree
 pub struct FlatTreeIterMut<'a, T: 'a> {
-    current: Option<NonZero<*mut TreeNode<T>>>,
+    current: *mut TreeNode<T>,
     _marker: PhantomData<&'a mut TreeNode<T>>,
 }
 
 impl<'a, T> FlatTreeIterMut<'a, T> {
     pub fn new(flat: &'a mut [TreeNode<T>]) -> FlatTreeIterMut<'a, T> {
-        unsafe {
-            FlatTreeIterMut {
-                current: flat.first_mut().map(|pointer| NonZero::new(pointer as *mut TreeNode<T>)),
-                _marker: PhantomData,
-            }
+        FlatTreeIterMut {
+            current: flat.first_mut().map(|p| p as *mut TreeNode<T>).unwrap_or(ptr::null_mut()),
+            _marker: PhantomData,
         }
     }
 
     pub fn new_empty() -> FlatTreeIterMut<'a, T> {
         FlatTreeIterMut {
-            current: None,
+            current: ptr::null_mut(),
             _marker: PhantomData
         }
     }
@@ -123,31 +121,35 @@ impl<'a, T: 'a> Iterator for FlatTreeIterMut<'a, T> {
     type Item = (&'a mut TreeNode<T>, ChildrenMut<'a, T>);
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        self.current.take().map(|ptr|{
+        if self.current.is_null() {
+            None
+        } else {
             unsafe {
-                let node: &mut TreeNode<T> = mem::transmute(ptr);
+                let node: &mut TreeNode<T> = mem::transmute(self.current);
                 if node.next_sibling > 0 {
-                    self.current = Some(NonZero::new(ptr.offset(node.next_sibling)));
+                    self.current = self.current.offset(node.next_sibling);
+                } else {
+                    self.current = ptr::null_mut();
                 }
                 let children = ChildrenMut::new(node);
-                (mem::transmute(node), children)
+                Some((node, children))
             }
-        })
+        }
     }
 }
 
 pub struct ChildrenMut<'a, T: 'a> {
     _marker: PhantomData<&'a mut TreeNode<T>>,
-    parent: NonZero<*mut TreeNode<T>>,
+    parent: *mut TreeNode<T>,
 }
 
 impl <'a, T> ChildrenMut<'a, T> {
     pub fn children_mut<'b>(&'b mut self) -> FlatTreeIterMut<'b, T> {
         unsafe {
-            let pointer = if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
-                Some(NonZero::new(self.parent.offset(1)))
+            let pointer = if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
+                self.parent.offset(1)
             } else {
-                None
+                ptr::null_mut()
             };
             FlatTreeIterMut {
                 _marker: PhantomData,
@@ -162,10 +164,10 @@ impl <'a, T> ChildrenMut<'a, T> {
 
     pub fn children<'b>(&'b self) -> FlatTreeIter<'b, T> {
         unsafe {
-            let pointer = if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
-                Some(NonZero::new(self.parent.offset(1) as *const TreeNode<T>))
+            let pointer = if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
+                self.parent.offset(1) as *const TreeNode<T>
             } else {
-                None
+                ptr::null()
             };
             FlatTreeIter {
                 _marker: PhantomData,
@@ -180,7 +182,7 @@ impl <'a, T> ChildrenMut<'a, T> {
 
     pub fn is_empty(&self) -> bool {
         unsafe {
-            if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
+            if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
                 false
             } else {
                 true
@@ -189,27 +191,25 @@ impl <'a, T> ChildrenMut<'a, T> {
     }
 
     fn new(node: *mut TreeNode<T>) -> ChildrenMut<'a, T> {
-        unsafe {
-            ChildrenMut {
-                parent: NonZero::new(node),
-                _marker: PhantomData,
-            }
+        ChildrenMut {
+            parent: node,
+            _marker: PhantomData,
         }
     }
 }
 
 pub struct Children<'a, T: 'a> {
     _marker: PhantomData<&'a TreeNode<T>>,
-    parent: NonZero<*const TreeNode<T>>,
+    parent: *const TreeNode<T>,
 }
 
 impl <'a, T> Children<'a, T> {
     pub fn children<'b>(&'b self) -> FlatTreeIter<'b, T> {
         unsafe {
-            let pointer = if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
-                Some(NonZero::new(self.parent.offset(1)))
+            let pointer = if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
+                self.parent.offset(1)
             } else {
-                None
+                ptr::null()
             };
             FlatTreeIter {
                 _marker: PhantomData,
@@ -224,7 +224,7 @@ impl <'a, T> Children<'a, T> {
 
     pub fn is_empty(&self) -> bool {
         unsafe {
-            if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
+            if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
                 false
             } else {
                 true
@@ -233,11 +233,9 @@ impl <'a, T> Children<'a, T> {
     }
 
     fn new(node: *const TreeNode<T>) -> Children<'a, T> {
-        unsafe {
-            Children {
-                parent: NonZero::new(node),
-                _marker: PhantomData,
-            }
+        Children {
+            parent: node,
+            _marker: PhantomData,
         }
     }
 }
