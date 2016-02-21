@@ -51,14 +51,15 @@ impl<T> FlatTree<T> {
         }
     }
 
-    pub fn node_as_index(&self, node: &TreeNode<T>) -> isize {
-        // TODO: this can trigger an overflow assert in debug builds
-        let index = (node as *const TreeNode<T> as usize
-            - self.buffer.get(0).unwrap() as *const TreeNode<T> as usize) as isize /
-            mem::size_of::<TreeNode<T>>() as isize;
+    pub fn node_as_index(&self, node: &TreeNode<T>) -> usize {
+        let first = self.buffer.get(0).unwrap();
+        assert!(node  as *const TreeNode<T> as usize >=
+                first as *const TreeNode<T> as usize);
+        let index = (node  as *const TreeNode<T> as usize -
+                     first as *const TreeNode<T> as usize) /
+            mem::size_of::<TreeNode<T>>();
         // If the diff is not in the range [0, len) then this is a bug.
-        assert!((index as usize) < self.buffer.len());
-        assert!(index >= 0);
+        assert!((index) < self.buffer.len());
         // Return diff
         index
     }
@@ -139,7 +140,7 @@ impl <T> FlatTreeLookup<T> {
     /// This method panics if the node given does not belong to this tree.
     pub fn node_as_global_index(&self, node: &TreeNode<T>) -> usize {
         let node_index = self.tree.node_as_index(node);
-        self.lookup_indices[node_index as usize]
+        self.lookup_indices[node_index]
     }
 }
 
