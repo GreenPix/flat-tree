@@ -1,6 +1,6 @@
 extern crate flat_tree;
-use flat_tree::{HasChildren,FlatTreeIterMut};
-use flat_tree::buffer::FlatTree;
+use flat_tree::buffer::{FlatTreeIterMut};
+use flat_tree::{FlatTree,HasChildren};
 
 #[derive(Debug)]
 struct NonFlatNode {

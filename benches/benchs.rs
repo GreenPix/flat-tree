@@ -10,8 +10,9 @@ use rand::distributions::range::Range;
 use rand::distributions::IndependentSample;
 use rand::{Rng,StdRng,SeedableRng};
 
-use flat_tree::*;
-use flat_tree::buffer::*;
+use flat_tree::HasChildren;
+use flat_tree::FlatTree;
+use flat_tree::buffer::FlatTreeIter;
 
 type NodeInner = u64;
 

@@ -1,8 +1,12 @@
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::iter::Zip;
+use std::slice::{Iter, IterMut};
 use std::mem;
-use std::marker::PhantomData;
-use std::ptr;
+
+use self::buffer::TreeNode;
+use self::buffer::FlatTreeIter;
+use self::buffer::FlatTreeIterMut;
 
 pub mod buffer;
 
@@ -10,232 +14,216 @@ pub trait HasChildren: Sized {
     fn get_children(&self) -> &[Self];
 }
 
-// Next sibling meaning:
-// * -1  : No sibling, but some children
-// * 0   : No sibling and no children
-// * 1   : siblings, but no children
-// * > 1 : siblings and children
+#[derive(Debug)]
+pub struct FlatTree<T> {
+    buffer: Box<[TreeNode<T>]>,
+}
+
+impl<T> Deref for FlatTree<T> {
+    type Target = [TreeNode<T>];
+
+    fn deref<'a>(&'a self) -> &'a <Self as Deref>::Target {
+        &self.buffer
+    }
+}
+
+impl<T> DerefMut for FlatTree<T> {
+
+    fn deref_mut<'a>(&'a mut self) -> &'a mut <Self as Deref>::Target {
+        &mut self.buffer
+    }
+}
+
+impl<T> FlatTree<T> {
+
+    pub fn new<F, N>(root: &N, cap: usize, node_producer: F) -> FlatTree<T>
+        where N: HasChildren,
+              F: Fn(&N) -> Option<T>
+    {
+        let mut buffer = Vec::with_capacity(cap);
+
+        fill_buffer(
+            &mut buffer,
+            &mut None,
+            &mut 0,
+            root,
+            &node_producer,
+            true
+        );
+
+        FlatTree {
+            buffer: buffer.into_boxed_slice(),
+        }
+    }
+
+    pub fn node_as_index(&self, node: &TreeNode<T>) -> usize {
+        let first = self.buffer.get(0).unwrap();
+        assert!(node  as *const TreeNode<T> as usize >=
+                first as *const TreeNode<T> as usize);
+        let index = (node  as *const TreeNode<T> as usize -
+                     first as *const TreeNode<T> as usize) /
+            mem::size_of::<TreeNode<T>>();
+        // If the diff is not in the range [0, len) then this is a bug.
+        assert!((index) < self.buffer.len());
+        // Return diff
+        index
+    }
+
+    pub fn tree_iter<'a>(&'a self) -> FlatTreeIter<'a, T> {
+        FlatTreeIter::new(&self.buffer)
+    }
+
+    pub fn tree_iter_mut<'a>(&'a mut self) -> FlatTreeIterMut<'a, T> {
+        FlatTreeIterMut::new(&mut self.buffer)
+    }
+
+}
 
 #[derive(Debug)]
-pub struct TreeNode<T> {
-    data: T,
-    next_sibling: isize,
+pub struct FlatTreeLookup<T> {
+    tree: FlatTree<T>,
+    lookup_indices: Box<[usize]>,
 }
 
-impl<T> Deref for TreeNode<T> {
-    type Target = T;
+impl<T> Deref for FlatTreeLookup<T> {
+    type Target = FlatTree<T>;
 
-    fn deref<'a>(&'a self) -> &'a T {
-        &self.data
+    fn deref<'a>(&'a self) -> &'a <Self as Deref>::Target {
+        &self.tree
     }
 }
 
-impl<T> DerefMut for TreeNode<T> {
+impl<T> DerefMut for FlatTreeLookup<T> {
 
-    fn deref_mut<'a>(&'a mut self) -> &'a mut T {
-        &mut self.data
+    fn deref_mut<'a>(&'a mut self) -> &'a mut <Self as Deref>::Target {
+        &mut self.tree
     }
 }
 
-impl<T> TreeNode<T> {
+impl <T> FlatTreeLookup<T> {
+    pub fn new<F, N>(
+        root: &N,
+        cap: usize,
+        node_producer: F) -> FlatTreeLookup<T>
+        where N: HasChildren,
+              F: Fn(&N) -> Option<T>
+    {
+        let mut buffer = Vec::with_capacity(cap);
+        let mut lookup_table = Some(Vec::with_capacity(cap));
 
-    unsafe fn new(data: T, next_sibling: isize) -> TreeNode<T> {
-        TreeNode {
-            data: data,
-            next_sibling: next_sibling,
+        fill_buffer(
+            &mut buffer,
+            &mut lookup_table,
+            &mut 0,
+            root,
+            &node_producer,
+            true
+        );
+
+        FlatTreeLookup {
+            tree: FlatTree{buffer: buffer.into_boxed_slice()},
+            lookup_indices: lookup_table.unwrap().into_boxed_slice()
         }
     }
 
-    #[inline]
-    unsafe fn set_next_sibling(&mut self, next_sibling: isize) {
-        self.next_sibling = next_sibling;
+    pub fn enumerate_lookup_indices_mut<'a>(&'a mut self)
+        -> Zip<Iter<usize>, IterMut<'a, TreeNode<T>>> {
+        let FlatTreeLookup{ref mut tree, ref lookup_indices} = *self;
+        let iter_mut = tree.iter_mut();
+        lookup_indices.iter().zip(iter_mut)
+    }
+
+    pub fn enumerate_lookup_indices<'a>(&'a self)
+        -> Zip<Iter<usize>, Iter<'a, TreeNode<T>>> {
+        self.lookup_indices.iter().zip(self.buffer.iter())
+    }
+
+    /// Returns the index of the given node in the original tree.
+    ///
+    /// # Panics
+    ///
+    /// This method panics if the node given does not belong to this tree.
+    pub fn node_as_global_index(&self, node: &TreeNode<T>) -> usize {
+        let node_index = self.tree.node_as_index(node);
+        self.lookup_indices[node_index]
     }
 }
 
-/// Const iterator over FlatTree
-pub struct FlatTreeIter<'a, T: 'a> {
-    current: *const TreeNode<T>,
-    _marker: PhantomData<&'a TreeNode<T>>,
+
+// ======================================== //
+//                  HELPERS                 //
+// ======================================== //
+
+fn increment_index<N>(current_index: &mut usize, node: &N)
+    where N: HasChildren
+{
+    *current_index += 1;
+
+    for kid in node.get_children() {
+        increment_index(current_index, kid);
+    }
 }
 
-impl<'a, T> FlatTreeIter<'a, T> {
-    pub fn new(flat: &'a [TreeNode<T>]) -> FlatTreeIter<'a, T> {
-        FlatTreeIter {
-            current: flat.first().map(|p| p as *const TreeNode<T>).unwrap_or(ptr::null()),
-            _marker: PhantomData,
+fn fill_buffer<F, N, T>(
+    vec: &mut Vec<TreeNode<T>>,
+    lookup_table: &mut Option<Vec<usize>>,
+    current_index: &mut usize,
+    node: &N,
+    node_producer: &F,
+    last_child: bool) -> isize
+where N: HasChildren,
+F: Fn(&N) -> Option<T>
+{
+    // Do we have a child here ?
+    if let Some(new_child) = node_producer(node) {
+
+        let index = vec.len();
+        let mut next_sibling: isize = 1;
+        let mut kids = node.get_children().len();
+
+        // Default next sibling
+        unsafe {
+            // Las child with children.
+            if kids > 0 {
+                vec.push(TreeNode::new(new_child, -1));
+                // Last child with no more children.
+            } else {
+                vec.push(TreeNode::new(new_child, 0));
+            }
         }
-    }
 
-    pub fn new_empty() -> FlatTreeIter<'a, T> {
-        FlatTreeIter {
-            current: ptr::null(),
-            _marker: PhantomData,
+        // Set values for lookup_table
+        if let Some(ref mut lookup_indices) = lookup_table.as_mut() {
+            lookup_indices.push(*current_index);
         }
-    }
-}
+        *current_index += 1;
 
-impl<'a, T: 'a> Iterator for FlatTreeIter<'a, T> {
-    type Item = (&'a TreeNode<T>, Children<'a, T>);
+        for kid in node.get_children() {
+            kids -= 1;
+            next_sibling += fill_buffer(
+                vec,
+                lookup_table,
+                current_index,
+                kid,
+                node_producer.clone(),
+                kids == 0
+                );
+        }
 
-    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.current.is_null() {
-            None
-        } else {
+        if !last_child {
             unsafe {
-                let node: &TreeNode<T> = mem::transmute(self.current);
-                if node.next_sibling > 0 {
-                    self.current = self.current.offset(node.next_sibling);
-                } else {
-                    self.current = ptr::null();
-                }
-                let children = Children::new(node);
-                Some((mem::transmute(node), children))
+                vec.get_unchecked_mut(index).set_next_sibling(next_sibling);
             }
         }
-    }
-}
 
-/// Mutable iterator over FlatTree
-pub struct FlatTreeIterMut<'a, T: 'a> {
-    current: *mut TreeNode<T>,
-    _marker: PhantomData<&'a mut TreeNode<T>>,
-}
+        next_sibling
 
-impl<'a, T> FlatTreeIterMut<'a, T> {
-    pub fn new(flat: &'a mut [TreeNode<T>]) -> FlatTreeIterMut<'a, T> {
-        FlatTreeIterMut {
-            current: flat.first_mut().map(|p| p as *mut TreeNode<T>).unwrap_or(ptr::null_mut()),
-            _marker: PhantomData,
-        }
-    }
+    } else {
+        // Child is ignored and all its sub tree.
+        // Increment the index.
+        increment_index(current_index, node);
 
-    pub fn new_empty() -> FlatTreeIterMut<'a, T> {
-        FlatTreeIterMut {
-            current: ptr::null_mut(),
-            _marker: PhantomData
-        }
-    }
-}
-
-impl<'a, T: 'a> Iterator for FlatTreeIterMut<'a, T> {
-    type Item = (&'a mut TreeNode<T>, ChildrenMut<'a, T>);
-
-    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.current.is_null() {
-            None
-        } else {
-            unsafe {
-                let node: &mut TreeNode<T> = mem::transmute(self.current);
-                if node.next_sibling > 0 {
-                    self.current = self.current.offset(node.next_sibling);
-                } else {
-                    self.current = ptr::null_mut();
-                }
-                let children = ChildrenMut::new(node);
-                Some((node, children))
-            }
-        }
-    }
-}
-
-pub struct ChildrenMut<'a, T: 'a> {
-    _marker: PhantomData<&'a mut TreeNode<T>>,
-    parent: *mut TreeNode<T>,
-}
-
-impl <'a, T> ChildrenMut<'a, T> {
-    pub fn children_mut<'b>(&'b mut self) -> FlatTreeIterMut<'b, T> {
-        unsafe {
-            let pointer = if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
-                self.parent.offset(1)
-            } else {
-                ptr::null_mut()
-            };
-            FlatTreeIterMut {
-                _marker: PhantomData,
-                current: pointer,
-            }
-        }
-    }
-
-    pub fn get_mut<'b>(&'b mut self, index: usize) -> Option<(&'b mut TreeNode<T>, ChildrenMut<'b, T>)> {
-        self.children_mut().nth(index)
-    }
-
-    pub fn children<'b>(&'b self) -> FlatTreeIter<'b, T> {
-        unsafe {
-            let pointer = if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
-                self.parent.offset(1) as *const TreeNode<T>
-            } else {
-                ptr::null()
-            };
-            FlatTreeIter {
-                _marker: PhantomData,
-                current: pointer,
-            }
-        }
-    }
-
-    pub fn get<'b>(&'b self, index: usize) -> Option<(&'b TreeNode<T>, Children<'b, T>)> {
-        self.children().nth(index)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        unsafe {
-            if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
-                false
-            } else {
-                true
-            }
-        }
-    }
-
-    fn new(node: *mut TreeNode<T>) -> ChildrenMut<'a, T> {
-        ChildrenMut {
-            parent: node,
-            _marker: PhantomData,
-        }
-    }
-}
-
-pub struct Children<'a, T: 'a> {
-    _marker: PhantomData<&'a TreeNode<T>>,
-    parent: *const TreeNode<T>,
-}
-
-impl <'a, T> Children<'a, T> {
-    pub fn children<'b>(&'b self) -> FlatTreeIter<'b, T> {
-        unsafe {
-            let pointer = if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
-                self.parent.offset(1)
-            } else {
-                ptr::null()
-            };
-            FlatTreeIter {
-                _marker: PhantomData,
-                current: pointer,
-            }
-        }
-    }
-
-    pub fn get<'b>(&'b self, index: usize) -> Option<(&'b TreeNode<T>, Children<'b, T>)> {
-        self.children().nth(index)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        unsafe {
-            if (*self.parent).next_sibling > 1 || (*self.parent).next_sibling == -1 {
-                false
-            } else {
-                true
-            }
-        }
-    }
-
-    fn new(node: *const TreeNode<T>) -> Children<'a, T> {
-        Children {
-            parent: node,
-            _marker: PhantomData,
-        }
+        // Returns the next_sibling increment value
+        0
     }
 }
