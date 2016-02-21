@@ -1,4 +1,4 @@
-#![feature(core)]
+#![feature(nonzero)]
 extern crate core;
 use core::nonzero::NonZero;
 use std::ops::Deref;
@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 
 pub mod buffer;
 
-pub trait HasChildren {
+pub trait HasChildren: Sized {
     fn get_children(&self) -> &[Self];
 }
 
@@ -178,6 +178,16 @@ impl <'a, T> ChildrenMut<'a, T> {
         self.children().nth(index)
     }
 
+    pub fn is_empty(&self) -> bool {
+        unsafe {
+            if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
+                false
+            } else {
+                true
+            }
+        }
+    }
+
     fn new(node: *mut TreeNode<T>) -> ChildrenMut<'a, T> {
         unsafe {
             ChildrenMut {
@@ -210,6 +220,16 @@ impl <'a, T> Children<'a, T> {
 
     pub fn get<'b>(&'b self, index: usize) -> Option<(&'b TreeNode<T>, Children<'b, T>)> {
         self.children().nth(index)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        unsafe {
+            if (**self.parent).next_sibling > 1 || (**self.parent).next_sibling == -1 {
+                false
+            } else {
+                true
+            }
+        }
     }
 
     fn new(node: *const TreeNode<T>) -> Children<'a, T> {
