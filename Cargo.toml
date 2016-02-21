@@ -1,5 +1,5 @@
 [package]
-name = "flat_tree"
+name = "flat-tree"
 version = "0.0.1"
 authors = ["Vaelden <maugan.villatel@gmail.com>",
            "Nemikolh <joan.varvenne@gmail.com"]
